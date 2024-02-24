@@ -104,6 +104,15 @@ type ExtTable struct {
 	ExtensionName string
 }
 
+type ForeignKeyInfo struct {
+	TableSchema        string
+	TableName          string
+	ColumnName         string
+	ForeignTableSchema string
+	ForeignTableName   string
+	ForeignColumnName  string
+}
+
 func NewDb(ctx context.Context, params utils.DbParams) (*Db, error) {
 	url := fmt.Sprintf("postgres://%s:%s@%s:%d/%s", params.Username, params.Password, params.Host, params.Port, params.Db)
 	cfg, err := pgxpool.ParseConfig(url)
@@ -241,7 +250,7 @@ func (db *Db) GetExtensions() ([]ExtTable, error) {
 	return tables, nil
 }
 
-func (db *Db) GetAllTables(st map[string]struct{}) ([]Table, error) {
+func (db *Db) GetAllTables(st map[string]struct{}) ([]*Table, error) {
 	rows, err := db.Conn.Query(context.Background(), `
 		SELECT schemaname as schema, 
 			   tablename as name 
@@ -252,7 +261,7 @@ func (db *Db) GetAllTables(st map[string]struct{}) ([]Table, error) {
 	if err != nil {
 		return nil, err
 	}
-	var tables []Table
+	var tables []*Table
 	for rows.Next() {
 		var name string
 		var schema string
@@ -261,7 +270,8 @@ func (db *Db) GetAllTables(st map[string]struct{}) ([]Table, error) {
 			log.Fatal(err)
 		}
 		if !ShouldSkip(schema, name, st) {
-			tables = append(tables, NewTable(name, schema, db))
+			newTbl := NewTable(name, schema, db)
+			tables = append(tables, &newTbl)
 		}
 	}
 
@@ -316,32 +326,41 @@ func (db *Db) GetVersion() string {
 	return version
 }
 
-func (db *Db) Close() {
-	db.Conn.Close()
+func (db *Db) GetForeignKeys() ([]ForeignKeyInfo, error) {
+	rows, err := db.Conn.Query(context.Background(), `
+	SELECT
+		tc.table_schema,
+		tc.table_name,
+		kcu.column_name,
+		ccu.table_schema AS foreign_table_schema,
+		ccu.table_name AS foreign_table_name,
+		ccu.column_name AS foreign_column_name
+	FROM
+		information_schema.table_constraints AS tc
+	JOIN information_schema.key_column_usage AS kcu
+		ON tc.constraint_name = kcu.constraint_name
+		AND tc.table_schema = kcu.table_schema
+	JOIN information_schema.constraint_column_usage AS ccu
+		ON ccu.constraint_name = tc.constraint_name
+		AND ccu.table_schema = tc.table_schema
+	WHERE tc.constraint_type = 'FOREIGN KEY';
+	;`)
+	if err != nil {
+		return nil, err
+	}
+	var tables []ForeignKeyInfo
+	for rows.Next() {
+		var table ForeignKeyInfo
+		err := rows.Scan(&table.TableSchema, &table.TableName, &table.ColumnName, &table.ForeignTableSchema, &table.ForeignTableName, &table.ForeignColumnName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		tables = append(tables, table)
+	}
+
+	return tables, nil
 }
 
-func (x *Db) Parse() []string {
-	var options []string
-
-	if x.DbName != "" {
-		options = append(options, fmt.Sprintf(`--dbname=%v`, x.DbName))
-	}
-
-	if x.Host != "" {
-		options = append(options, fmt.Sprintf(`--host=%v`, x.Host))
-	}
-
-	if x.Port != 0 {
-		options = append(options, fmt.Sprintf(`--port=%v`, x.Port))
-	}
-
-	if x.Username != "" {
-		options = append(options, fmt.Sprintf(`--username=%v`, x.Username))
-	}
-
-	if x.Password != "" {
-		x.EnvPassword = fmt.Sprintf(`PGPASSWORD=%v`, x.Password)
-	}
-
-	return options
+func (db *Db) Close() {
+	db.Conn.Close()
 }

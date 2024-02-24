@@ -16,9 +16,17 @@ type TableInfo struct {
 	Identifier string
 }
 
+type TableRelation struct {
+	ForeignTable  *Table
+	ForeignColumn string
+	Column        string
+}
+
 type Table struct {
-	Details *TableInfo
-	db      *Db
+	Details     *TableInfo
+	db          *Db
+	SampleQuery string
+	SelectQuery string
 }
 
 // readFirstLine reads the first line from the file for use as column names in the COPY command.

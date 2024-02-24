@@ -77,6 +77,12 @@ func Run(ctx context.Context, cmd *cli.Command) error {
 		return err
 	}
 
+	db.GetTables(pg, tables, "public.nut_data", 10000)
+
+	if true {
+		return nil
+	}
+
 	pgDbVersion := pg.GetVersion()
 	pgDumpVersion, err := pgcommand.GetPgCmdVersion("pg_dump")
 
@@ -99,7 +105,7 @@ func Run(ctx context.Context, cmd *cli.Command) error {
 
 		concurrencyLimit <- struct{}{}
 
-		go func(tbl db.Table) {
+		go func(tbl *db.Table) {
 			defer wg.Done()
 
 			dirPath := filepath.Join(root, tbl.Details.Name)
