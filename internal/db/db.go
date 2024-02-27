@@ -102,6 +102,17 @@ type ExtTable struct {
 	ExtensionName string
 }
 
+type ForeignKeyInfo struct {
+	Schema            string
+	Name              string
+	ColumnName        string
+	ForeignSchema     string
+	ForeignName       string
+	ForeignColumnName string
+	SourceTableId     string
+	ForeignTableId    string
+}
+
 // Creates a new db instance by creating a connection pool
 func NewDb(ctx context.Context, params utils.DbParams) (*Db, error) {
 	url := fmt.Sprintf("postgres://%s:%s@%s:%d/%s", params.Username, params.Password, params.Host, params.Port, params.Db)
@@ -323,6 +334,43 @@ func (db *Db) CopyTo(ctx context.Context, r io.Reader, sql string) (int64, error
 	}
 
 	return res.RowsAffected(), nil
+}
+
+func (db *Db) GetForeignKeys() ([]ForeignKeyInfo, error) {
+	rows, err := db.Conn.Query(context.Background(), `
+	SELECT
+		tc.table_schema,
+		tc.table_name,
+		kcu.column_name,
+		ccu.table_schema AS foreign_table_schema,
+		ccu.table_name AS foreign_table_name,
+		ccu.column_name AS foreign_column_name
+	FROM
+		information_schema.table_constraints AS tc
+	JOIN information_schema.key_column_usage AS kcu
+		ON tc.constraint_name = kcu.constraint_name
+		AND tc.table_schema = kcu.table_schema
+	JOIN information_schema.constraint_column_usage AS ccu
+		ON ccu.constraint_name = tc.constraint_name
+		AND ccu.table_schema = tc.table_schema
+	WHERE tc.constraint_type = 'FOREIGN KEY';
+	;`)
+	if err != nil {
+		return nil, err
+	}
+	var tables []ForeignKeyInfo
+	for rows.Next() {
+		var table ForeignKeyInfo
+		err := rows.Scan(&table.Schema, &table.Name, &table.ColumnName, &table.ForeignSchema, &table.ForeignName, &table.ForeignColumnName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		table.SourceTableId = fmt.Sprintf("%s.%s", table.Schema, table.Name)
+		table.ForeignTableId = fmt.Sprintf("%s.%s", table.ForeignSchema, table.ForeignName)
+		tables = append(tables, table)
+	}
+
+	return tables, nil
 }
 
 func (db *Db) GetVersion() string {

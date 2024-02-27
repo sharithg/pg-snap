@@ -18,8 +18,11 @@ type TableInfo struct {
 }
 
 type Table struct {
-	Details *TableInfo
-	db      *Db
+	Details     *TableInfo
+	db          *Db
+	Id          string
+	SampleQuery string
+	NumRows     int64
 }
 
 // readFirstLine reads the first line from the file for use as column names in the COPY command.
@@ -45,7 +48,7 @@ func readFirstLine(file *os.File) (string, error) {
 }
 
 func NewTable(name string, schema string, db *Db) Table {
-	identifer := fmt.Sprintf("\"%s\".\"%s\"", schema, name)
+	identifer := NormalizeName(schema, name)
 	display := fmt.Sprintf("%s.%s", schema, name)
 
 	return Table{
@@ -56,21 +59,31 @@ func NewTable(name string, schema string, db *Db) Table {
 			Display:    display,
 		},
 		db: db,
+		Id: display,
 	}
 }
 
-func (t *Table) CopyOut(path string) (int64, error) {
+func (t *Table) CopyOut(path string, query string) (int64, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return 0, err
 	}
 	defer file.Close()
-	sql := fmt.Sprintf("COPY %s TO STDOUT WITH CSV HEADER DELIMITER ','", t.Details.Identifier)
+	sql := fmt.Sprintf("COPY (%s) TO STDOUT WITH CSV HEADER DELIMITER ','", query)
 	rows, err := t.db.CopyFrom(context.Background(), file, sql)
 	if err != nil {
 		return 0, err
 	}
 	return rows, nil
+}
+
+func (t *Table) GetNumRows() (int64, error) {
+	rows := t.db.Conn.QueryRow(context.Background(), fmt.Sprintf("SELECT count(*) as cnt from %s", t.Details.Identifier))
+	var count int64
+	if err := rows.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 func (t *Table) CopyIn(path string, name string, schema *string) (int64, error) {
@@ -136,4 +149,8 @@ func DeserializeTable(path string, db *Db) (*Table, error) {
 	table.db = db
 
 	return &table, nil
+}
+
+func NormalizeName(s, n string) string {
+	return fmt.Sprintf("\"%s\".\"%s\"", s, n)
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/urfave/cli/v3"
 	"github.com/videahealth/pg-snap/internal/db"
 	"github.com/videahealth/pg-snap/internal/pgcommand"
+	"github.com/videahealth/pg-snap/internal/relations"
 	"github.com/videahealth/pg-snap/internal/utils"
 )
 
@@ -104,11 +106,29 @@ func RunCmd(dbParams utils.DbParams, programParams utils.ProgramParams) error {
 
 	skipTablesStr := programParams.SkipTables
 	skipTables := ParseSkipTables(skipTablesStr)
-	tables, err := pg.GetAllTables(skipTables)
+	allTables, err := pg.GetAllTables(skipTables)
+	if err != nil {
+		return err
+	}
+
+	tblRelations, err := pg.GetForeignKeys()
+	if err != nil {
+		return nil
+	}
+	tables, err := relations.GetRelations(pg, allTables, "public.nut_data", 10, tblRelations)
 
 	if err != nil {
 		return err
 	}
+
+	// if true {
+	// 	return nil
+	// }
+
+	// var tableStructure [][]db.Table
+	// for _, table := range tables {
+	// 	tableStructure = append(tableStructure, []db.Table{table})
+	// }
 
 	pgDbVersion := pg.GetVersion()
 	pgDumpVersion, err := pgcommand.GetPgCmdVersion("pg_dump")
@@ -130,59 +150,72 @@ func RunCmd(dbParams utils.DbParams, programParams utils.ProgramParams) error {
 		return err
 	}
 
-	log.Info("Running with", "concurrency", programParams.Concurrency)
-
 	concurrencyLimit := make(chan struct{}, programParams.Concurrency)
 
 	var wg sync.WaitGroup
 	var ops atomic.Uint64
 	total := len(tables)
 
-	for _, table := range tables {
-		wg.Add(1)
+	for currDepth, tableLevel := range tables {
+		for _, table := range tableLevel {
+			wg.Add(1)
 
-		concurrencyLimit <- struct{}{}
+			concurrencyLimit <- struct{}{}
 
-		go func(tbl db.Table) {
-			defer wg.Done()
+			go func(tbl db.Table, depth int) {
+				defer wg.Done()
 
-			log.Debug(utils.SprintfNoNewlines("COPYING data from table %s", tbl.Details.Display))
+				if depth == 0 {
+					L := 5
+					numRows, err := tbl.GetNumRows()
+					if err != nil {
+						log.Fatalf("error getting num rows %s", err)
+					}
+					rowsToQuery := int64(math.Round(float64(numRows) * float64(L) * 0.01))
+					tbl.SampleQuery = fmt.Sprintf("SELECT * FROM %s LIMIT %d", tbl.Details.Identifier, rowsToQuery)
+				} else {
+					predecessors := relations.GetTablePredecessors(tbl.Details.Schema, tbl.Details.Name, tblRelations)
+					tbl.SampleQuery = relations.BuildSelectQuery(tbl.Details.Identifier, predecessors)
+				}
 
-			dirPath := filepath.Join(root, tbl.Details.Display)
+				log.Debug(utils.SprintfNoNewlines("COPYING data from table %s", tbl.Details.Display))
 
-			if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
-				log.Error("Error copying for table %s: %s", tbl.Details.Display, err)
-			}
+				dirPath := filepath.Join(root, tbl.Details.Display)
 
-			path := filepath.Join(dirPath, "data.csv")
-			dataPath := filepath.Join(dirPath, "table.bin")
+				if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
+					log.Error("Error copying for table %s: %s", tbl.Details.Display, err)
+				}
 
-			rows, err := tbl.CopyOut(path)
-			if err != nil {
-				log.Error("Error copying data for table %s: %w", tbl.Details.Display, err)
-			}
+				path := filepath.Join(dirPath, "data.csv")
+				dataPath := filepath.Join(dirPath, "table.bin")
 
-			err = tbl.SerializeTable(dataPath)
+				rows, err := tbl.CopyOut(path, tbl.SampleQuery)
+				if err != nil {
+					log.Error("Error copying data for table %s: %w", tbl.Details.Display, err)
+				}
 
-			if err != nil {
-				log.Error("Error serializing data for table %s: %w", tbl.Details.Display, err)
-			}
+				err = tbl.SerializeTable(dataPath)
 
-			if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
-				log.Error("Error serializing data for table %s: %s", tbl.Details.Display, err)
-			}
+				if err != nil {
+					log.Error("Error serializing data for table %s: %w", tbl.Details.Display, err)
+				}
 
-			ops.Add(1)
-			progress := ops.Load()
+				if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
+					log.Error("Error serializing data for table %s: %s", tbl.Details.Display, err)
+				}
 
-			log.Info(utils.SprintfNoNewlines("COPIED %s rows from %s",
-				utils.Colored(utils.Green, fmt.Sprint(rows)),
-				utils.Colored(utils.Yellow, tbl.Details.Display)),
-				"progress",
-				utils.SprintfNoNewlines("%d / %d", progress, total))
+				ops.Add(1)
+				progress := ops.Load()
 
-			<-concurrencyLimit
-		}(table)
+				log.Info(utils.SprintfNoNewlines("COPIED %s rows from %s",
+					utils.Colored(utils.Green, fmt.Sprint(rows)),
+					utils.Colored(utils.Yellow, tbl.Details.Display)),
+					"progress",
+					utils.SprintfNoNewlines("%d / %d", progress, total))
+
+				<-concurrencyLimit
+			}(table, currDepth)
+		}
 	}
 
 	wg.Wait()
