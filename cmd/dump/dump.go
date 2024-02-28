@@ -6,12 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"github.com/charmbracelet/log"
 	"github.com/urfave/cli/v3"
@@ -106,119 +103,99 @@ func RunCmd(dbParams utils.DbParams, programParams utils.ProgramParams) error {
 
 	skipTablesStr := programParams.SkipTables
 	skipTables := ParseSkipTables(skipTablesStr)
-	allTables, err := pg.GetAllTables(skipTables)
+	tables, err := pg.GetAllTables(skipTables)
 	if err != nil {
 		return err
 	}
 
-	tblRelations, err := pg.GetForeignKeys()
-	if err != nil {
-		return nil
-	}
-	tables, err := relations.GetRelations(pg, allTables, "public.nut_data", 10, tblRelations)
+	subset, err := relations.NewSubset(pg, tables)
 
 	if err != nil {
 		return err
 	}
+
+	subset.Visit()
 
 	// if true {
 	// 	return nil
 	// }
 
-	// var tableStructure [][]db.Table
-	// for _, table := range tables {
-	// 	tableStructure = append(tableStructure, []db.Table{table})
+	// pgDbVersion := pg.GetVersion()
+	// pgDumpVersion, err := pgcommand.GetPgCmdVersion("pg_dump")
+
+	// if err != nil {
+	// 	return err
 	// }
 
-	pgDbVersion := pg.GetVersion()
-	pgDumpVersion, err := pgcommand.GetPgCmdVersion("pg_dump")
+	// log.Info(utils.SprintfNoNewlines("Remote postgres version: %s, local version: %s", pgDbVersion, pgDumpVersion))
 
-	if err != nil {
-		return err
-	}
-
-	log.Info(utils.SprintfNoNewlines("Remote postgres version: %s, local version: %s", pgDbVersion, pgDumpVersion))
-
-	if err := utils.ValidateDbVersion(pgDbVersion, pgDumpVersion); err != nil {
-		return errors.New("major postgres version does not match pg_dump")
-	}
+	// if err := utils.ValidateDbVersion(pgDbVersion, pgDumpVersion); err != nil {
+	// 	return errors.New("major postgres version does not match pg_dump")
+	// }
 
 	root := "./data-dump"
-	defer os.RemoveAll(root)
+	// defer os.RemoveAll(root)
 
-	if err != nil {
-		return err
-	}
+	// if err != nil {
+	// 	return err
+	// }
 
-	concurrencyLimit := make(chan struct{}, programParams.Concurrency)
+	// log.Info("Running with", "concurrency", programParams.Concurrency)
 
-	var wg sync.WaitGroup
-	var ops atomic.Uint64
-	total := len(tables)
+	// concurrencyLimit := make(chan struct{}, programParams.Concurrency)
 
-	for currDepth, tableLevel := range tables {
-		for _, table := range tableLevel {
-			wg.Add(1)
+	// var wg sync.WaitGroup
+	// var ops atomic.Uint64
+	// total := len(tables)
 
-			concurrencyLimit <- struct{}{}
+	// for _, table := range tables {
+	// 	wg.Add(1)
 
-			go func(tbl db.Table, depth int) {
-				defer wg.Done()
+	// 	concurrencyLimit <- struct{}{}
 
-				if depth == 0 {
-					L := 5
-					numRows, err := tbl.GetNumRows()
-					if err != nil {
-						log.Fatalf("error getting num rows %s", err)
-					}
-					rowsToQuery := int64(math.Round(float64(numRows) * float64(L) * 0.01))
-					tbl.SampleQuery = fmt.Sprintf("SELECT * FROM %s LIMIT %d", tbl.Details.Identifier, rowsToQuery)
-				} else {
-					predecessors := relations.GetTablePredecessors(tbl.Details.Schema, tbl.Details.Name, tblRelations)
-					tbl.SampleQuery = relations.BuildSelectQuery(tbl.Details.Identifier, predecessors)
-				}
+	// 	go func(tbl db.Table) {
+	// 		defer wg.Done()
 
-				log.Debug(utils.SprintfNoNewlines("COPYING data from table %s", tbl.Details.Display))
+	// 		log.Debug(utils.SprintfNoNewlines("COPYING data from table %s", tbl.Details.Display))
 
-				dirPath := filepath.Join(root, tbl.Details.Display)
+	// 		dirPath := filepath.Join(root, tbl.Details.Display)
 
-				if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
-					log.Error("Error copying for table %s: %s", tbl.Details.Display, err)
-				}
+	// 		if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
+	// 			log.Error("Error copying for table %s: %s", tbl.Details.Display, err)
+	// 		}
 
-				path := filepath.Join(dirPath, "data.csv")
-				dataPath := filepath.Join(dirPath, "table.bin")
+	// 		path := filepath.Join(dirPath, "data.csv")
+	// 		dataPath := filepath.Join(dirPath, "table.bin")
 
-				rows, err := tbl.CopyOut(path, tbl.SampleQuery)
-				if err != nil {
-					log.Error("Error copying data for table %s: %w", tbl.Details.Display, err)
-				}
+	// 		rows, err := tbl.CopyOut(path, "")
+	// 		if err != nil {
+	// 			log.Error("Error copying data for table %s: %w", tbl.Details.Display, err)
+	// 		}
 
-				err = tbl.SerializeTable(dataPath)
+	// 		err = tbl.SerializeTable(dataPath)
 
-				if err != nil {
-					log.Error("Error serializing data for table %s: %w", tbl.Details.Display, err)
-				}
+	// 		if err != nil {
+	// 			log.Error("Error serializing data for table %s: %w", tbl.Details.Display, err)
+	// 		}
 
-				if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
-					log.Error("Error serializing data for table %s: %s", tbl.Details.Display, err)
-				}
+	// 		if err := os.MkdirAll(dirPath, os.ModePerm); err != nil {
+	// 			log.Error("Error serializing data for table %s: %s", tbl.Details.Display, err)
+	// 		}
 
-				ops.Add(1)
-				progress := ops.Load()
+	// 		ops.Add(1)
+	// 		progress := ops.Load()
 
-				log.Info(utils.SprintfNoNewlines("COPIED %s rows from %s",
-					utils.Colored(utils.Green, fmt.Sprint(rows)),
-					utils.Colored(utils.Yellow, tbl.Details.Display)),
-					"progress",
-					utils.SprintfNoNewlines("%d / %d", progress, total))
+	// 		log.Info(utils.SprintfNoNewlines("COPIED %s rows from %s",
+	// 			utils.Colored(utils.Green, fmt.Sprint(rows)),
+	// 			utils.Colored(utils.Yellow, tbl.Details.Display)),
+	// 			"progress",
+	// 			utils.SprintfNoNewlines("%d / %d", progress, total))
 
-				<-concurrencyLimit
-			}(table, currDepth)
-		}
-	}
+	// 		<-concurrencyLimit
+	// 	}(table)
+	// }
 
-	wg.Wait()
+	// wg.Wait()
 
 	log.Info("Extracting database DDL")
 

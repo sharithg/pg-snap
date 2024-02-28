@@ -111,6 +111,8 @@ type ForeignKeyInfo struct {
 	ForeignColumnName string
 	SourceTableId     string
 	ForeignTableId    string
+	ForeignColType    string
+	ColType           string
 }
 
 // Creates a new db instance by creating a connection pool
@@ -339,21 +341,36 @@ func (db *Db) CopyTo(ctx context.Context, r io.Reader, sql string) (int64, error
 func (db *Db) GetForeignKeys() ([]ForeignKeyInfo, error) {
 	rows, err := db.Conn.Query(context.Background(), `
 	SELECT
-		tc.table_schema,
-		tc.table_name,
-		kcu.column_name,
-		ccu.table_schema AS foreign_table_schema,
-		ccu.table_name AS foreign_table_name,
-		ccu.column_name AS foreign_column_name
-	FROM
-		information_schema.table_constraints AS tc
-	JOIN information_schema.key_column_usage AS kcu
-		ON tc.constraint_name = kcu.constraint_name
-		AND tc.table_schema = kcu.table_schema
-	JOIN information_schema.constraint_column_usage AS ccu
-		ON ccu.constraint_name = tc.constraint_name
-		AND ccu.table_schema = tc.table_schema
-	WHERE tc.constraint_type = 'FOREIGN KEY';
+    tc.table_schema,
+    tc.table_name,
+    kcu.column_name,
+    ccu.table_schema AS foreign_table_schema,
+    ccu.table_name AS foreign_table_name,
+    ccu.column_name AS foreign_column_name,
+    foreign_columns.data_type AS foreign_column_type,
+    columns.data_type AS column_type
+FROM
+    information_schema.table_constraints AS tc
+JOIN
+    information_schema.key_column_usage AS kcu
+    ON tc.constraint_name = kcu.constraint_name
+    AND tc.table_schema = kcu.table_schema
+JOIN
+    information_schema.constraint_column_usage AS ccu
+    ON ccu.constraint_name = tc.constraint_name
+    AND ccu.table_schema = tc.table_schema
+JOIN
+    information_schema.columns AS columns
+    ON columns.table_schema = tc.table_schema
+    AND columns.table_name = tc.table_name
+    AND columns.column_name = kcu.column_name
+JOIN
+    information_schema.columns AS foreign_columns
+    ON foreign_columns.table_schema = ccu.table_schema
+    AND foreign_columns.table_name = ccu.table_name
+    AND foreign_columns.column_name = ccu.column_name
+WHERE
+    tc.constraint_type = 'FOREIGN KEY';
 	;`)
 	if err != nil {
 		return nil, err
@@ -361,7 +378,7 @@ func (db *Db) GetForeignKeys() ([]ForeignKeyInfo, error) {
 	var tables []ForeignKeyInfo
 	for rows.Next() {
 		var table ForeignKeyInfo
-		err := rows.Scan(&table.Schema, &table.Name, &table.ColumnName, &table.ForeignSchema, &table.ForeignName, &table.ForeignColumnName)
+		err := rows.Scan(&table.Schema, &table.Name, &table.ColumnName, &table.ForeignSchema, &table.ForeignName, &table.ForeignColumnName, &table.ForeignColType, &table.ColType)
 		if err != nil {
 			log.Fatal(err)
 		}

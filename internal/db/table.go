@@ -63,13 +63,16 @@ func NewTable(name string, schema string, db *Db) Table {
 	}
 }
 
-func (t *Table) CopyOut(path string, query string) (int64, error) {
+func (t *Table) CopyOut(path, query string) (int64, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0666)
 	if err != nil {
 		return 0, err
 	}
 	defer file.Close()
 	sql := fmt.Sprintf("COPY (%s) TO STDOUT WITH CSV HEADER DELIMITER ','", query)
+	if query == "" {
+		sql = fmt.Sprintf("COPY (SELECT * FROM %s) TO STDOUT WITH CSV HEADER DELIMITER ','", t.Id)
+	}
 	rows, err := t.db.CopyFrom(context.Background(), file, sql)
 	if err != nil {
 		return 0, err

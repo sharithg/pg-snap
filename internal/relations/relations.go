@@ -2,6 +2,7 @@ package relations
 
 import (
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/videahealth/pg-snap/internal/db"
@@ -26,15 +27,19 @@ func GetTablePredecessors(schema string, name string, relations []db.ForeignKeyI
 	var preds []db.ForeignKeyInfo
 
 	for _, rel := range relations {
-		if schema == rel.Schema && name == rel.Name {
+		if schema == rel.ForeignSchema && name == rel.ForeignName {
 			preds = append(preds, rel)
 		}
 	}
 	return preds
 }
 
-func GetRelations(pg *db.Db, tables []db.Table, sampleTable string, numSample int, relations []db.ForeignKeyInfo) ([][]db.Table, error) {
-	var tablesComb [][]db.Table
+func GetRelations(pg *db.Db, tables []db.Table, sampleTable string, numSample int) error {
+	relations, err := pg.GetForeignKeys()
+
+	if err != nil {
+		return err
+	}
 
 	dag := &DAG{}
 
@@ -48,7 +53,7 @@ func GetRelations(pg *db.Db, tables []db.Table, sampleTable string, numSample in
 		dag.AddEdge(node1, node2)
 	}
 
-	dag.PrettyPrint()
+	fmt.Println(dag.ToGraphviz())
 
 	sorted := dag.TopologicalSort()
 	reverse(sorted)
@@ -57,78 +62,55 @@ func GetRelations(pg *db.Db, tables []db.Table, sampleTable string, numSample in
 		fmt.Printf("Depth %d: %v\n", depth, group)
 	}
 
-	for _, tableList := range sorted {
-		var tablesCombLevel []db.Table
+	first := sorted[0]
+	rest := sorted[1:]
+	L := 5
+
+	var tablesComb []db.Table
+
+	for _, tableId := range first {
+		table, err := GetTable(tables, tableId)
+		if err != nil {
+			return err
+		}
+		numRows, err := table.GetNumRows()
+		if err != nil {
+			return err
+		}
+		rowsToQuery := int64(math.Round(float64(numRows) * float64(L) * 0.01))
+		table.SampleQuery = fmt.Sprintf("SELECT * FROM %s LIMIT %d", table.Details.Identifier, rowsToQuery)
+		tablesComb = append(tablesComb, *table)
+	}
+
+	for _, tableList := range rest {
 		for _, tableId := range tableList {
 			table, err := GetTable(tables, tableId)
 			if err != nil {
-				return nil, err
+				return err
 			}
-			tablesCombLevel = append(tablesCombLevel, *table)
+			predecessors := GetTablePredecessors(table.Details.Schema, table.Details.Name, relations)
+			table.SampleQuery = BuildSelectQuery(table.Details.Identifier, predecessors)
+			tablesComb = append(tablesComb, *table)
 		}
-		tablesComb = append(tablesComb, tablesCombLevel)
 	}
 
-	return tablesComb, nil
+	for _, comb := range tablesComb {
+		fmt.Println(comb.SampleQuery)
+	}
 
-	// first := sorted[0]
-	// rest := sorted[1:]
-	// L := 5
-
-	// for _, tableId := range first {
-	// 	table, err := GetTable(tables, tableId)
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// 	numRows, err := table.GetNumRows()
-	// 	if err != nil {
-	// 		return err
-	// 	}
-	// 	rowsToQuery := int64(math.Round(float64(numRows) * float64(L) * 0.01))
-	// 	table.SampleQuery = fmt.Sprintf("SELECT * FROM %s LIMIT %d", table.Details.Identifier, rowsToQuery)
-	// 	tablesComb = append(tablesComb, *table)
-	// }
-
-	// for _, tableList := range rest {
-	// 	for _, tableId := range tableList {
-	// 		table, err := GetTable(tables, tableId)
-	// 		if err != nil {
-	// 			return err
-	// 		}
-	// 		predecessors := GetTablePredecessors(table.Details.Schema, table.Details.Name, relations)
-	// 		table.SampleQuery = BuildSelectQuery(table.Details.Identifier, predecessors)
-	// 		tablesComb = append(tablesComb, *table)
-	// 	}
-	// }
-
-	// for _, comb := range tablesComb {
-	// 	fmt.Println(comb.SampleQuery)
-	// }
-
-	// return nil
+	return nil
 }
 
 func BuildSelectQuery(mainTable string, predecessors []db.ForeignKeyInfo) string {
 	var query strings.Builder
 	query.WriteString(fmt.Sprintf("SELECT %s.* FROM %s", mainTable, mainTable))
 
-	// Track the aliases to ensure uniqueness
-	aliases := make(map[string]int)
-
 	for _, fk := range predecessors {
-		// Generate a unique alias for the foreign table based on its name and how many times it has been used
-		aliasCount, exists := aliases[fk.ForeignName]
-		if exists {
-			aliases[fk.ForeignName] = aliasCount + 1
-		} else {
-			aliases[fk.ForeignName] = 1
-		}
-		alias := fmt.Sprintf("%s_%d", fk.ForeignName, aliases[fk.ForeignName])
-
-		joinClause := fmt.Sprintf(" LEFT JOIN %s.%s AS %s ON %s.%s = %s.%s",
-			fk.ForeignSchema, fk.ForeignName, alias, // JOIN table with alias
+		// Assuming the foreign key relationships are direct and there's no need for aliasing for simplicity
+		joinClause := fmt.Sprintf(" LEFT JOIN %s.%s ON %s.%s = %s.%s",
+			fk.ForeignSchema, fk.ForeignName, // JOIN table
 			mainTable, fk.ColumnName, // main table column
-			alias, fk.ForeignColumnName) // foreign table column with alias
+			fk.ForeignName, fk.ForeignColumnName) // foreign table column
 
 		query.WriteString(joinClause)
 	}
