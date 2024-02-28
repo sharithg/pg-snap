@@ -11,6 +11,13 @@ import (
 	"github.com/videahealth/pg-snap/internal/utils"
 )
 
+type VisitMode string
+
+const (
+	VisitSuccessors   VisitMode = "successors"
+	VisitPredecessors VisitMode = "predecessors"
+)
+
 type Row struct {
 	Table   *db.Table
 	ColName string
@@ -44,44 +51,7 @@ func (s *Subset) Visit() {
 	copiedData := make(map[*Node]bool)
 	gVisited := make(map[*Node]bool)
 
-	startNode := s.DAG.FindNodeByData(db.NormalizeName(s.StartTableSchema, s.StartTableName))
-	printCallback := func(node *Node, visited map[*Node]bool) bool {
-		table, err := GetTable(s.Tables, node.Data)
-		gVisited[node] = true
-		if err != nil {
-			log.Fatalf("error getting table: %s", err)
-			return false
-		}
-		fmt.Println(table.Id, copiedData[node])
-		if !copiedData[node] {
-			if node.Data == db.NormalizeName(s.StartTableSchema, s.StartTableName) {
-				PerformCopy(*table, "SELECT * FROM public.nutr_def LIMIT 1")
-				copiedData[node] = true
-			} else {
-				var queryB strings.Builder
-				hasQ := false
-				for _, p := range node.Children {
-					vis := gVisited[p]
-					fmt.Println("\t"+p.Data, vis)
-					if vis && copiedData[p] {
-						q := BuildQuery(p.Data, node.Data, s.Relations, s.Tables)
-						queryB.WriteString(q)
-						hasQ = true
-					}
-				}
-
-				if hasQ {
-					selectSt := fmt.Sprintf("SELECT * FROM %s WHERE %s", node.Data, queryB.String())
-					fmt.Println("\t" + "COPYING")
-					PerformCopy(*table, selectSt)
-					copiedData[node] = true
-				}
-			}
-
-		}
-		return true
-	}
-	printCallback2 := func(node *Node, visited map[*Node]bool) bool {
+	visitNode := func(node *Node, visitMode VisitMode) bool {
 		table, err := GetTable(s.Tables, node.Data)
 		gVisited[node] = true
 
@@ -89,46 +59,72 @@ func (s *Subset) Visit() {
 			log.Fatalf("error getting table: %s", err)
 			return false
 		}
-		fmt.Println(table.Id, copiedData[node])
+
 		if !copiedData[node] {
 			if node.Data == db.NormalizeName(s.StartTableSchema, s.StartTableName) {
 				PerformCopy(*table, "SELECT * FROM public.nutr_def LIMIT 1")
 				copiedData[node] = true
 			} else {
 				var conditions []string
-				hasQ := false
-				for _, p := range s.DAG.FindPredecessors(node) {
+				var queryNodes []*Node
+
+				switch visitMode {
+				case VisitSuccessors:
+					queryNodes = node.Children
+				case VisitPredecessors:
+					queryNodes = s.DAG.FindPredecessors(node)
+				}
+				for _, p := range queryNodes {
 					vis := gVisited[p]
-					fmt.Println("\t"+p.Data, vis)
 					if vis && copiedData[p] {
-						q := BuildQuery2(p.Data, node.Data, s.Relations, s.Tables)
+						var q string
+						if visitMode == VisitSuccessors {
+							q = BuildQuery(p.Data, node.Data, s.Relations, s.Tables)
+						} else {
+							q = BuildQuery2(p.Data, node.Data, s.Relations, s.Tables)
+						}
 						if q != "" {
 							conditions = append(conditions, q)
 						}
-						hasQ = true
 					}
 				}
 
-				if hasQ {
+				if len(conditions) > 0 {
 					queryCondition := strings.Join(conditions, " OR ")
 					selectSt := fmt.Sprintf("SELECT * FROM %s WHERE %s", node.Data, queryCondition)
-					fmt.Println("\t" + selectSt)
+					fmt.Println(node.Data)
 					PerformCopy(*table, selectSt)
 					copiedData[node] = true
 				}
 			}
-
 		}
 		return true
 	}
-	s.DAG.TraverseGraphFromStart(startNode, printCallback)
 
-	startNode2 := s.DAG.FindNodeByData(db.NormalizeName("public", "food_des"))
-	fmt.Println("-----------")
-	s.DAG.TraverseGraphFromStart(startNode2, printCallback2)
-	startNode3 := s.DAG.FindNodeByData(db.NormalizeName("public", "weight"))
-	fmt.Println("-----------")
-	s.DAG.TraverseGraphFromStart(startNode3, printCallback)
+	startNode := s.DAG.FindNodeByData(db.NormalizeName(s.StartTableSchema, s.StartTableName))
+
+	nodes := s.DAG.TraverseGraphFromStart(startNode)
+	for _, node := range nodes {
+		visitNode(node, VisitSuccessors)
+		visitNode(node, VisitPredecessors)
+	}
+
+	for {
+		totalCopied := 0
+		for _, visited := range copiedData {
+			if visited {
+				totalCopied++
+			}
+		}
+		if totalCopied == len(s.DAG.Nodes) {
+			break
+		}
+
+		for _, node := range nodes {
+			visitNode(node, VisitPredecessors)
+			visitNode(node, VisitSuccessors)
+		}
+	}
 }
 
 func BuildQuery2(foreignTableId string, toCopyId string, relations []db.ForeignKeyInfo, tables []db.Table) string {
@@ -240,8 +236,6 @@ func BuildRelations(relations []db.ForeignKeyInfo) DAG {
 
 		dag.AddEdge(node1, node2)
 	}
-
-	fmt.Println(strings.ReplaceAll(dag.ToGraphviz(), "public_", ""))
 
 	return *dag
 }

@@ -89,9 +89,9 @@ func (dag *DAG) DFSPredecessors(startNode *Node, callback func(node *Node) bool)
 	dfsRecursive(startNode)
 }
 
-func (dag *DAG) TraverseGraphFromStart(startNode *Node, callback func(node *Node, visited map[*Node]bool) bool) {
+func (dag *DAG) TraverseGraphFromStart(startNode *Node) []*Node {
 	visited := make(map[*Node]bool) // Keep track of visited nodes
-	var allNodes = dag.Nodes        // Access all nodes directly
+	var result []*Node              // Slice to store the nodes encountered during DFS
 
 	var dfsRecursive func(node *Node)
 	dfsRecursive = func(node *Node) {
@@ -100,9 +100,8 @@ func (dag *DAG) TraverseGraphFromStart(startNode *Node, callback func(node *Node
 		}
 		visited[node] = true
 
-		if !callback(node, visited) {
-			return // Stop traversal if callback returns false
-		}
+		// Add the current node to the result slice
+		result = append(result, node)
 
 		// Visit all predecessors
 		for _, pred := range dag.FindPredecessors(node) {
@@ -113,12 +112,15 @@ func (dag *DAG) TraverseGraphFromStart(startNode *Node, callback func(node *Node
 	// Initial DFS from the start node
 	dfsRecursive(startNode)
 
-	// Continue with DFS for unvisited nodes, ensuring the entire graph is covered
-	for _, node := range allNodes {
+	// Optionally, continue with DFS for unvisited nodes, ensuring the entire graph is covered.
+	// Comment out or remove the below loop if you only want to traverse the connected component starting from startNode.
+	for _, node := range dag.Nodes {
 		if !visited[node] {
 			dfsRecursive(node)
 		}
 	}
+
+	return result
 }
 
 func (dag *DAG) DFS(startNode *Node, callback func(node *Node) bool) {
